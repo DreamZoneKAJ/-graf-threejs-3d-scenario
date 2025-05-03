@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<title>three.js webgl - FBX loader with effects</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+	<link type="text/css" rel="stylesheet" href="main.css">
+</head>
+<body>
+	<div id="info">
+		<a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - FBXLoader + Particle Rain + Fog Controls
+	</div>
+
+	<script type="importmap">
+		{
+			"imports": {
+				"three": "../build/three.module.js",
+				"three/addons/": "./jsm/"
+			}
+		}
+	</script>
+
+	<script type="module">
+		import * as THREE from 'three';
+		import Stats from 'three/addons/libs/stats.module.js';
+		import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+		import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+		import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
+		import { Audio, AudioListener, AudioLoader } from 'three';
+
+		let camera, scene, renderer, stats, object, mixer;
+		let rainParticles, rainGeometry, rainMaterial, rainVelocity = 1, wind = 0;
+		let fogDensity = 0.002;
+
+		const clock = new THREE.Clock();
+		const loader = new FBXLoader();
+
+		init();
+		function init() {
+			const container = document.createElement('div');
+			document.body.appendChild(container);
+
+			camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 2000);
+			camera.position.set(100, 200, 300);
+
+			scene = new THREE.Scene();
+			scene.fog = new THREE.FogExp2(0x99ccff, fogDensity);
+
+			const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 5);
+			hemiLight.position.set(0, 200, 0);
+			scene.add(hemiLight);
+
+			const dirLight = new THREE.DirectionalLight(0xffffff, 5);
+			dirLight.position.set(0, 200, 100);
+			dirLight.castShadow = true;
+			scene.add(dirLight);
+
+			const ground = new THREE.Mesh(
+				new THREE.PlaneGeometry(2000, 2000),
+				new THREE.MeshPhongMaterial({ color: 0xb22222, depthWrite: false })
+			);
+			ground.rotation.x = -Math.PI / 2;
+			ground.receiveShadow = true;
+			scene.add(ground);
+
+			// Load FBX model
+			loader.load('models/fbx/Flying Kick.fbx', function (group) {
+				object = group;
+				mixer = new THREE.AnimationMixer(object);
+				const action = mixer.clipAction(object.animations[0]);
+				action.play();
+				object.traverse(function (child) {
+					if (child.isMesh) {
+						child.material = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.5, metalness: 0.7 });
+						child.castShadow = true;
+						child.receiveShadow = true;
+					}
+				});
+				scene.add(object);
+			});
+            // HDR
+			const exrLoader = new EXRLoader();
+			exrLoader.load('models/rgbe/construction_yard_4k.exr', function (texture) {
+				texture.mapping = THREE.EquirectangularReflectionMapping;
+				scene.background = texture;
+				scene.environment = texture;
+			});
+			renderer = new THREE.WebGLRenderer({ antialias: true });
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			renderer.setAnimationLoop(animate);
+			renderer.shadowMap.enabled = true;
+			container.appendChild(renderer.domElement);
+
+			new OrbitControls(camera, renderer.domElement);
+			stats = new Stats();
+			container.appendChild(stats.dom);
+
+			createRain();
+
+			window.addEventListener('resize', onWindowResize);
+			document.addEventListener('keydown', onKeyDown);
+		}
+
+		function createRain() {
+			rainGeometry = new THREE.BufferGeometry();
+			const count = 100000;
+			const positions = new Float32Array(count * 3);
+
+			// Expand la lluvia a un área más grande
+			for (let i = 0; i < count; i++) {
+				positions[i * 3] = Math.random() * 4000 - 2000; // X más amplio
+				positions[i * 3 + 1] = Math.random() * 2000 + 500; // más altura
+				positions[i * 3 + 2] = Math.random() * 4000 - 2000; // Z más amplio
+			}
+
+			rainGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+			rainMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 2 });
+			rainParticles = new THREE.Points(rainGeometry, rainMaterial);
+			scene.add(rainParticles);
+		}
+
+		function onKeyDown(event) {
+            const positions = rainGeometry.attributes.position.array;
+
+            switch (event.key.toLowerCase()) {
+                case 'arrowup':
+                    rainVelocity += 0.2;
+                    break;
+                case 'arrowdown':
+                    rainVelocity -= 0.2;
+                    break;
+                case 'r': rainMaterial.color.set(0xff0000); break;
+                case 'g': rainMaterial.color.set(0x00ff00); break;
+                case 'b': rainMaterial.color.set(0x0000ff); break;
+                case 'w': rainMaterial.color.set(0xffffff); break;
+                case 'v':
+                    wind = Math.min(wind + 0.1, 0.5); // Aumentar viento en el eje Z
+                    break;
+
+                case 'arrowleft': fogDensity = Math.max(0, fogDensity - 0.0005); break;
+                case 'arrowright': fogDensity += 0.0005; break;
+                case 'a': scene.fog.color.set(0xff0000); break;
+                case 's': scene.fog.color.set(0x00ff00); break;
+                case 'd': scene.fog.color.set(0x0000ff); break;
+                case 'f': scene.fog.color.set(0xffffff); break;
+            }
+
+            // Reiniciar si la velocidad está fuera del rango [0.3, 4.5]
+            if (rainVelocity < 0.3 || rainVelocity > 4.5) {
+                rainVelocity = 0.1;
+                console.log("Velocidad fuera de rango. Reiniciando rainVelocity a 0.1");
+            }
+
+            scene.fog.density = fogDensity;
+        }
+
+		function animate() {
+			const delta = clock.getDelta();
+			if (mixer) mixer.update(delta);
+
+			const positions = rainGeometry.attributes.position.array;
+			for (let i = 0; i < positions.length; i += 3) {
+				positions[i + 1] -= rainVelocity;
+				positions[i + 2] += wind; // Mueve las partículas en el eje Z
+				if (positions[i + 1] < 0) {
+					positions[i + 1] = Math.random() * 2000 + 500; // Reaparece a una altura aleatoria
+					// No reseteamos X ni Z, así que la lluvia no desaparece
+				}
+			}
+			rainGeometry.attributes.position.needsUpdate = true;
+
+			renderer.render(scene, camera);
+			stats.update();
+		}
+
+		function onWindowResize() {
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+			renderer.setSize(window.innerWidth, window.innerHeight);
+		}
+	</script>
+</body>
+</html>
